@@ -11,6 +11,7 @@ import os
 import mimetypes
 import base64
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,59 @@ from tools.base_tool import (
     ToolStatus,
     ToolTier,
 )
+
+
+# The Gemini API serves Veo only as preview models, and all three shut down on
+# 2026-10-22 (https://ai.google.dev/gemini-api/docs/deprecations). Veo GA
+# (veo-3.1-generate-001) stays available on Vertex AI.
+_GEMINI_API_VEO_SHUTDOWN = date(2026, 10, 22)
+_GEMINI_API_VEO_PREVIEW_MODELS = {
+    "veo-3.1-generate-preview",
+    "veo-3.1-fast-generate-preview",
+    "veo-3.1-lite-generate-preview",
+}
+_GEMINI_API_VEO_RETIRED_ERROR = (
+    "Veo preview models were retired on the Gemini API on 2026-10-22 — use "
+    "gemini_omni_video (gemini-omni-1.1-flash) or configure Vertex AI "
+    "(GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT) for veo-3.1-generate-001."
+)
+
+# Gemini API Veo price per second of output, by tier and resolution.
+_GOOGLE_PRICE_PER_SECOND = {
+    "standard": {"720p": 0.40, "1080p": 0.40, "4k": 0.60},
+    "fast": {"720p": 0.10, "1080p": 0.12, "4k": 0.30},
+    # Lite has no 4k output; 4k requests are priced at the 1080p rate.
+    "lite": {"720p": 0.05, "1080p": 0.08, "4k": 0.08},
+}
+
+
+def _today() -> date:
+    """Return today's date (module-level so tests can monkeypatch it)."""
+    return date.today()
+
+
+def _resolve_google_model(model_variant: str, is_vertex: bool) -> str:
+    """Map a model_variant alias to a Google model ID.
+
+    Vertex only has the GA model, so every alias maps to veo-3.1-generate-001.
+    Unknown strings are treated as explicit model IDs and passed through.
+    """
+    if model_variant in {"veo3", "veo3.1"}:
+        tier = "standard"
+    elif model_variant in {"veo3/fast", "veo3.1/fast"}:
+        tier = "fast"
+    elif model_variant == "veo3.1/lite":
+        tier = "lite"
+    else:
+        return model_variant
+
+    if is_vertex:
+        return "veo-3.1-generate-001"
+    if tier == "fast":
+        return "veo-3.1-fast-generate-preview"
+    if tier == "lite":
+        return "veo-3.1-lite-generate-preview"
+    return "veo-3.1-generate-preview"
 
 
 class VeoVideo(BaseTool):
@@ -99,7 +153,12 @@ class VeoVideo(BaseTool):
             "model_variant": {
                 "type": "string",
                 "default": "veo3.1",
-                "description": "Model variant for FAL (e.g. veo3.1) or custom model for Google",
+                "description": (
+                    "Model variant: veo3.1, veo3.1/fast or veo3.1/lite, or a "
+                    "custom Google model ID. On the "
+                    "Gemini API the Veo preview models retire on 2026-10-22; "
+                    "Vertex AI uses veo-3.1-generate-001 for every alias."
+                ),
             },
             "duration": {
                 "type": "string",
@@ -203,8 +262,17 @@ class VeoVideo(BaseTool):
             duration = 8
 
         if backend == "google":
-            # Standard Google Veo is $0.40 per second
-            return round(duration * 0.40, 4)
+            # Gemini API Veo pricing by tier (standard/fast/lite) and resolution
+            variant = str(inputs.get("model_variant", "veo3.1"))
+            if "lite" in variant:
+                tier = "lite"
+            elif "fast" in variant:
+                tier = "fast"
+            else:
+                tier = "standard"
+            resolution = inputs.get("resolution", "1080p")
+            prices = _GOOGLE_PRICE_PER_SECOND[tier]
+            return round(duration * prices.get(resolution, prices["1080p"]), 4)
 
         # FAL cost estimation
         variant = inputs.get("model_variant", "veo3.1")
@@ -313,14 +381,16 @@ class VeoVideo(BaseTool):
         model_variant = inputs.get("model_variant", "veo3.1")
         auto_fix = inputs.get("auto_fix", True)
 
-        # Map to the official preview model unless a custom model name is provided
-        if model_variant in {"veo3", "veo3/fast", "veo3.1", "veo3.1/fast"}:
-            if is_vertex:
-                model_name = "veo-3.1-generate-001"
-            else:
-                model_name = "veo-3.1-generate-preview"
-        else:
-            model_name = model_variant
+        # Map aliases to Google model IDs unless a custom model name is provided
+        model_name = _resolve_google_model(model_variant, bool(is_vertex))
+
+        # Refuse retired Gemini API preview models before any API call
+        if (
+            not is_vertex
+            and model_name in _GEMINI_API_VEO_PREVIEW_MODELS
+            and _today() >= _GEMINI_API_VEO_SHUTDOWN
+        ):
+            return ToolResult(success=False, error=_GEMINI_API_VEO_RETIRED_ERROR)
 
         duration_text = str(inputs.get("duration", "8s")).lower().replace("s", "")
         try:

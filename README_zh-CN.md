@@ -425,7 +425,7 @@ OpenMontage/
 | **Kling** | 云端 API | 高质量，速度快 |
 | **Seedance 2.0（火山方舟）** | 云端 API | 独立的 `seedance_ark` 官方直连接口 |
 | **Runway Gen-4** | 云端 API | 电影级质量，Gen-3 Alpha Turbo / Gen-4 Turbo / Gen-4 Aleph |
-| **Google Veo 3** | 云端 API | 长篇幅，电影级。通过 fal.ai 或 HeyGen 接入。 |
+| **Google Veo 3.1** | 云端 API | 电影级质量。通过 Vertex AI、fal.ai 或 HeyGen 接入（Gemini API 预览版于 2026-10-22 停用）。 |
 | **Grok Imagine Video** | 云端 API | 强大的基于参考图的视频和 xAI 原生短视频生成 |
 | **Higgsfield** | 云端 API | 带 Soul ID 以实现角色一致性的多模型编排器 |
 | **MiniMax** | 云端 API | 极具成本效益 |
@@ -446,7 +446,7 @@ OpenMontage/
 | 提供商 | 类型 | 备注 |
 |----------|------|-------|
 | **FLUX** | 云端 API | 业界顶尖质量 |
-| **Google Imagen** | 云端 API | Imagen 4 — 高质量、多种长宽比 |
+| **Google Imagen** | 云端 API | Gemini 图像模型 — Nano Banana 2.1（默认）/ Gemini 3 Pro Image，最高 4K |
 | **Grok Imagine Image** | 云端 API | 强大的图像编辑、风格转换和多图合成 |
 | **GPT Image 2** | 云端 API | OpenAI 的图像模型 |
 | **Recraft** | 云端 API | 专注于设计的生成 |

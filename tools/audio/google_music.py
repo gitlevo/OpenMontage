@@ -1,6 +1,8 @@
 """Generate music using Google Lyria via Google GenAI SDK.
 
-Generate background music and audio tracks for video production using lyria-3-pro-preview.
+Generate background music and audio tracks for video production using Lyria 3.5
+(default, full-length songs up to 184 s), Lyria 3 Clip (fixed 30 s clips) or the
+legacy lyria-3-pro-preview.
 """
 
 from __future__ import annotations
@@ -74,8 +76,15 @@ class GoogleMusic(BaseTool):
         "properties": {
             "model": {
                 "type": "string",
-                "enum": ["lyria-3-pro-preview", "lyria-3.5"],
+                "enum": ["lyria-3.5", "lyria-3-clip-preview", "lyria-3-pro-preview"],
                 "default": "lyria-3.5",
+                "description": (
+                    "lyria-3.5: full-length songs up to 184s ($0.08/song). "
+                    "lyria-3-clip-preview: always a fixed 30s clip, cheaper "
+                    "($0.04/clip), good for short loops and reels; "
+                    "duration_seconds is ignored. "
+                    "lyria-3-pro-preview: legacy, superseded by lyria-3.5 ($0.08)."
+                ),
             },
             "prompt": {
                 "type": "string",
@@ -86,7 +95,10 @@ class GoogleMusic(BaseTool):
                 "minimum": 5,
                 "maximum": 184,
                 "default": 30,
-                "description": "Target duration in seconds (model hard limit is 184s)",
+                "description": (
+                    "Target duration in seconds (model hard limit is 184s). "
+                    "Ignored by lyria-3-clip-preview, which always returns 30s."
+                ),
             },
             "image_url": {
                 "type": "string",
@@ -137,14 +149,24 @@ class GoogleMusic(BaseTool):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
+    # Flat USD price per generation request (Gemini API pricing, 2026-10).
+    MODEL_COSTS_USD = {
+        "lyria-3.5": 0.08,
+        "lyria-3-clip-preview": 0.04,
+        "lyria-3-pro-preview": 0.08,
+    }
+    # lyria-3-clip-preview always produces a fixed-length clip.
+    CLIP_MODEL = "lyria-3-clip-preview"
+    CLIP_DURATION_SECONDS = 30.0
+
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         """Estimate the generation cost in USD."""
-        # Lyria 3 Pro is a flat $0.08 per generation request
-        if inputs.get("model", "lyria-3.5") == "lyria-3.5":
+        model_name = inputs.get("model", "lyria-3.5")
+        if model_name not in self.MODEL_COSTS_USD:
             raise PriceQuoteRequired(
-                "Obtain current Lyria 3.5 pricing before generation"
+                f"Obtain current pricing for {model_name} before generation"
             )
-        return 0.08
+        return self.MODEL_COSTS_USD[model_name]
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         """Execute the music generation tool using the Google GenAI SDK."""
@@ -180,34 +202,51 @@ class GoogleMusic(BaseTool):
         auto_fix = inputs.get("auto_fix", True)
         output_path = inputs.get("output_path", "music_output.mp3")
 
+        model_name = inputs.get("model", "lyria-3.5")
+        if model_name not in self.input_schema["properties"]["model"]["enum"]:
+            return ToolResult(success=False, error="Unsupported Lyria model")
+        is_clip = model_name == self.CLIP_MODEL
+        warnings: list[str] = []
+
+        if is_clip:
+            # Clip model always returns a fixed 30s clip; duration is not controllable.
+            requested = inputs.get("duration_seconds")
+            if requested is not None and float(requested) != self.CLIP_DURATION_SECONDS:
+                warnings.append(
+                    f"{model_name} always produces a fixed "
+                    f"{int(self.CLIP_DURATION_SECONDS)}-second clip; "
+                    f"requested duration_seconds={requested} was ignored."
+                )
+            duration = self.CLIP_DURATION_SECONDS
+
         # Ensure minimum duration of 5 seconds
-        if duration < 5:
+        if not is_clip and duration < 5:
             if auto_fix:
                 import logging
 
                 logging.getLogger(__name__).warning(
-                    "Lyria 3 Pro requires a minimum duration of 5 seconds. Coercing duration_seconds to 5.0."
+                    f"{model_name} requires a minimum duration of 5 seconds. Coercing duration_seconds to 5.0."
                 )
                 duration = 5.0
             else:
                 return ToolResult(
                     success=False,
-                    error="lyria-3-pro-preview minimum duration is 5 seconds.",
+                    error=f"{model_name} minimum duration is 5 seconds.",
                 )
 
         # Cap at 184 seconds
-        if duration > 184:
+        if not is_clip and duration > 184:
             if auto_fix:
                 import logging
 
                 logging.getLogger(__name__).warning(
-                    "Lyria 3 Pro supports up to 184 seconds of audio. Coercing duration_seconds to 184."
+                    f"{model_name} supports up to 184 seconds of audio. Coercing duration_seconds to 184."
                 )
                 duration = 184.0
             else:
                 return ToolResult(
                     success=False,
-                    error="lyria-3-pro-preview maximum duration is 184 seconds.",
+                    error=f"{model_name} maximum duration is 184 seconds.",
                 )
 
         # Helper to load reference image bytes + mime type
@@ -234,8 +273,12 @@ class GoogleMusic(BaseTool):
             return None
 
         # Build payload input incorporating target duration instructions
-        timed_prompt = f"{prompt}\n\n[Target Duration: {int(duration)} seconds]"
-        input_list: list[dict[str, Any]] = [{"type": "text", "text": timed_prompt}]
+        # (the clip model has a fixed length, so it gets the bare prompt).
+        if is_clip:
+            text_prompt = prompt
+        else:
+            text_prompt = f"{prompt}\n\n[Target Duration: {int(duration)} seconds]"
+        input_list: list[dict[str, Any]] = [{"type": "text", "text": text_prompt}]
         try:
             image_data = _get_image_data(
                 inputs.get("image_url"), inputs.get("image_path")
@@ -248,10 +291,6 @@ class GoogleMusic(BaseTool):
                 success=False,
                 error=f"Failed to load visual conditioning image: {e}",
             )
-
-        model_name = inputs.get("model", "lyria-3.5")
-        if model_name not in self.input_schema["properties"]["model"]["enum"]:
-            return ToolResult(success=False, error="Unsupported Lyria model")
 
         try:
             # Create parent dirs if needed
@@ -332,20 +371,24 @@ class GoogleMusic(BaseTool):
             )
 
         duration_seconds = round(time.time() - start, 2)
-        cost_usd = self.estimate_cost(inputs) if model_name != "lyria-3.5" else None
+        cost_usd = self.estimate_cost({**inputs, "model": model_name})
+
+        data: dict[str, Any] = {
+            "provider": "google",
+            "model": model_name,
+            "prompt": prompt,
+            "duration_seconds": duration,
+            "output": str(output_path),
+            "output_path": str(output_path),
+            "format": "mp3",
+            "cost_status": "estimated",
+        }
+        if warnings:
+            data["warnings"] = warnings
 
         return ToolResult(
             success=True,
-            data={
-                "provider": "google",
-                "model": model_name,
-                "prompt": prompt,
-                "duration_seconds": duration,
-                "output": str(output_path),
-                "output_path": str(output_path),
-                "format": "mp3",
-                "cost_status": "unquoted" if cost_usd is None else "estimated",
-            },
+            data=data,
             artifacts=[str(output_path)],
             cost_usd=cost_usd,
             duration_seconds=duration_seconds,

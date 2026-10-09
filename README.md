@@ -506,9 +506,9 @@ Each tool declares which Layer 3 skills it relies on. The agent reads Layer 1 to
 | **Atlas Cloud** | Cloud API | Unified gateway for Seedance, MiniMax, Hunyuan, and other multimodal models |
 | **Seedance 2.0 (Volcengine Ark)** | Cloud API | Official direct API with separate `seedance_ark` provider |
 | **Seedance 2.5 / 2.0** | Cloud API | Text, image, and reference-driven video workflows through supported gateways |
-| **Gemini Omni Flash** | Cloud API | Conversational multimodal video generation and editing |
+| **Gemini Omni Flash 1.1** | Cloud API | Conversational video generation and editing, first/last frame, extend to 40s (~$0.10/s at 720p) |
 | **Runway Gen-4** | Cloud API | Cinematic quality, Gen-3 Alpha Turbo / Gen-4 Turbo / Gen-4 Aleph |
-| **Google Veo 3.1** | Cloud API | Premium cinematic video via Google GenAI or fal.ai |
+| **Google Veo 3.1** | Cloud API | Premium cinematic video via Vertex AI or fal.ai (Gemini API previews end 2026-10-22) |
 | **Grok Imagine Video** | Cloud API | Strong reference-image video and xAI-native short-form generation |
 | **Higgsfield** | Cloud API | Multi-model orchestrator with Soul ID for character consistency |
 | **MiniMax / H3** | Cloud API | Cost-effective generation, including text, image, and reference-driven H3 workflows |
@@ -529,7 +529,7 @@ Each tool declares which Layer 3 skills it relies on. The agent reads Layer 1 to
 | Provider | Type | Notes |
 |----------|------|-------|
 | **FLUX** | Cloud API | State-of-the-art quality |
-| **Google Imagen** | Cloud API | Imagen 4 — high-quality, multiple aspect ratios |
+| **Google Imagen** | Cloud API | Gemini image models — Nano Banana 2.1 (default) / Gemini 3 Pro Image, up to 4K |
 | **Grok Imagine Image** | Cloud API | Strong image edits, style transfer, and multi-image compositing |
 | **GPT Image 2** | Cloud API | OpenAI's image model |
 | **Seedream 5.0** | Cloud API | High-fidelity text-to-image and image editing through supported gateways |
