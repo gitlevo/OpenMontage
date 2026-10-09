@@ -42,7 +42,7 @@ quality require live validation in the intended environment.
 | 4 | **$0** | Piper (local install) | Fully offline TTS — no API key, no cost, no network |
 | 5 | **~$0.03/image** | fal.ai | FLUX images + Kling/Veo/MiniMax video + Recraft — broad single-key image + video coverage |
 | 6 | **~$0.05/image** | OpenAI | GPT Image 2 images + OpenAI TTS |
-| 7 | **~$0.04/image** | Google Imagen | Imagen 4 images (shares the Google API key) |
+| 7 | **~$0.03/image** | Google Imagen | Gemini image models — Nano Banana 2.1 / Gemini 3 Pro Image (shares the Google API key) |
 | 8 | **pay-as-you-go** | Kling Official | Official direct Kling video, image, TTS, avatar, and lip-sync API, separate from fal.ai Kling |
 | 9 | **pay-as-you-go** | Volcengine Ark | Official direct Seedance 2.0 Standard/Fast/Mini API |
 | 10 | **$12/month** | Runway | Gen-4 video — highest quality AI video |
@@ -788,7 +788,7 @@ costs about $0.015. OpenMontage estimates cost from character count. See
 
 ### Google — TTS + Imagen + Music + Video (Shared Key)
 
-> **One key, five tools.** Google Cloud TTS has 700+ voices in 50+ languages — the strongest localization option. `google_imagen` supports both Imagen 4 and Gemini 2.5 Flash Image, including projects without Imagen catalog access. Google Lyria generates high-quality background music. Gemini Omni Flash supports conversational video editing, and direct Veo generation covers premium short video clips.
+> **One key, five tools.** Google Cloud TTS has 700+ voices in 50+ languages — the strongest localization option. `google_imagen` (historical name) generates with the Gemini image models — Nano Banana 2.1 by default, Gemini 3 Pro Image for top fidelity; Imagen 4 was retired on 2026-08-17. Google Lyria generates high-quality background music. Gemini Omni Flash supports conversational video editing, and direct Veo generation covers premium short video clips (Gemini API until 2026-10-22, Vertex AI afterwards).
 
 **Tools unlocked:** `google_tts`, `google_imagen`, `google_music`, `gemini_omni_video`, `veo_video`
 **Env var:** `GOOGLE_API_KEY` (or `GEMINI_API_KEY` — either works; `GEMINI_API_KEY` takes precedence)
@@ -822,35 +822,51 @@ costs about $0.015. OpenMontage estimates cost from character count. See
 
 The free tiers apply *independently* — you get 1M Standard AND 1M WaveNet AND 1M Neural2 characters per month free. That's roughly 250+ minutes of narration per month at zero cost.
 
-#### Google Imagen Pricing
+#### Google Image (`google_imagen`) Pricing
 
-| Model | Price per image |
-|-------|----------------|
-| Imagen 4 Fast | $0.02 |
-| Imagen 4 Standard | $0.04 |
-| Imagen 4 Ultra | $0.06 |
-| Gemini 2.5 Flash Image (`gemini-2.5-flash-image`) | $0.039 |
+As of 2026-10. Imagen 4 (Fast/Standard/Ultra) was retired on the Gemini API on 2026-08-17; `google_imagen` rejects `imagen-*` IDs.
 
-**Free tier for Imagen:** None. Paid tier only.
+| Model | 1K | 2K | 4K | Notes |
+|-------|----|----|----|-------|
+| `gemini-nano-banana-2.1` (default) | $0.0336 | $0.0504 | $0.113 | Nano Banana 2.1, GA 2026-10-06 |
+| `gemini-3-pro-image` | $0.134 | $0.134 | $0.24 | Highest fidelity and text rendering |
+| `gemini-3.1-flash-lite-image` | $0.0336 | — | — | Cheapest; 1K only |
+| `gemini-3.1-flash-image` | $0.067 | $0.101 | $0.151 | Deprecated (Nano Banana 2) |
+| `gemini-2.5-flash-image` | $0.039 | — | — | No resolution control; shuts down 2027-03-15 |
 
-To select the Gemini backend through the governed `image_selector`, pass
-`preferred_provider: "google_imagen"` and
-`model_name: "gemini-2.5-flash-image"`. The selector maps its neutral
+**Free tier for image generation:** None. Paid tier only.
+
+To pick a specific model through the governed `image_selector`, pass
+`preferred_provider: "google_imagen"` and e.g.
+`model_name: "gemini-3-pro-image"`. The selector maps its neutral
 `model_name` field to the provider's `model` input.
 
 #### Gemini Omni Video Pricing
 
 | Model | Price | Notes |
 |-------|-------|-------|
-| `gemini-omni-flash-preview` | ~$0.10 per second of video | Billed as 5,792 output tokens/sec of 720p video at $17.50/1M tokens |
+| `gemini-omni-1.1-flash` (default, GA) | ~$0.10 per second of 720p video | Billed as 5,792 output tokens/sec of 720p video at $17.50/1M tokens; 360p/1080p/4k quoted at the same rate (estimated) |
+| `gemini-omni-flash-preview` (legacy) | ~$0.10 per second | Shuts down 2026-10-22 |
 
-Generates 3–10 second clips at 720p/24fps with synthesized audio, plus stateful conversational editing (`edit_video` via `previous_interaction_id`). **Paid tier only — no free tier.** A typical 8-second clip costs ~$0.80; each edit turn generates a new clip and bills again.
+Generates 3–10 second clips at 24fps (720p native; 360p and upscaled 1080p/4k) with synthesized audio, plus stateful conversational editing (`edit_video` via `previous_interaction_id`), first/last-frame interpolation and `extend` (+3–10s per call, 40s total). **Paid tier only — no free tier.** A typical 8-second clip costs ~$0.80; each edit turn generates a new clip and bills again.
+
+#### Direct Veo Video (`veo_video`, Google backend) Pricing
+
+| Variant | 720p | 1080p | 4k | Model ID (Gemini API) |
+|---------|------|-------|----|------------------------|
+| `veo3.1` | $0.40/sec | $0.40/sec | $0.60/sec | `veo-3.1-generate-preview` |
+| `veo3.1/fast` | $0.10/sec | $0.12/sec | $0.30/sec | `veo-3.1-fast-generate-preview` |
+| `veo3.1/lite` | $0.05/sec | $0.08/sec | — | `veo-3.1-lite-generate-preview` |
+
+**The Veo preview models shut down on the Gemini API on 2026-10-22**, and `veo_video` refuses Gemini-API Veo calls from that date. After that, direct Veo needs Vertex AI (`GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT`, model `veo-3.1-generate-001`) or the fal.ai backend; for Google-key-only video use `gemini_omni_video`.
 
 #### Google Music (Lyria) Pricing
 
 | Model | Price per generation request |
 |-------|-----------------------------|
-| `lyria-3-pro-preview` | $0.08 (flat rate, up to 184s duration) |
+| `lyria-3.5` (default) | $0.08 (flat rate, up to 184s duration) |
+| `lyria-3-clip-preview` | $0.04 (always a 30s clip) |
+| `lyria-3-pro-preview` (legacy) | $0.08 (flat rate, up to 184s duration) |
 
 **Free tier for Music:** None. Paid tier only.
 

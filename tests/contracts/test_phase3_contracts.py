@@ -428,6 +428,120 @@ class TestGoogleMusic:
             assert "Failed to load visual conditioning image" in res.error
             assert "Local reference image not found" in res.error
 
+    def test_model_enum_and_costs(self):
+        tool = GoogleMusic()
+        model_schema = tool.input_schema["properties"]["model"]
+        assert model_schema["enum"] == [
+            "lyria-3.5",
+            "lyria-3-clip-preview",
+            "lyria-3-pro-preview",
+        ]
+        assert model_schema["default"] == "lyria-3.5"
+        assert tool.estimate_cost({"prompt": "x"}) == 0.08
+        assert tool.estimate_cost({"prompt": "x", "model": "lyria-3.5"}) == 0.08
+        assert (
+            tool.estimate_cost({"prompt": "x", "model": "lyria-3-clip-preview"})
+            == 0.04
+        )
+        assert (
+            tool.estimate_cost({"prompt": "x", "model": "lyria-3-pro-preview"})
+            == 0.08
+        )
+
+    @pytest.mark.parametrize(
+        ("model", "expected_cost"),
+        [
+            ("lyria-3.5", 0.08),
+            ("lyria-3-clip-preview", 0.04),
+            ("lyria-3-pro-preview", 0.08),
+        ],
+    )
+    def test_result_reports_real_cost(self, tmp_path, model, expected_cost):
+        tool = GoogleMusic()
+        mock_client = MagicMock()
+        mock_interaction = MagicMock()
+        mock_interaction.status = "completed"
+        mock_interaction.output_audio.data = base64.b64encode(b"audio_bytes").decode(
+            "utf-8"
+        )
+        mock_client.interactions.create.return_value = mock_interaction
+
+        with (
+            patch.dict(os.environ, {"GEMINI_API_KEY": "test_key"}),
+            patch("google.genai.Client", return_value=mock_client),
+        ):
+            res = tool.execute(
+                {
+                    "prompt": "lofi beat",
+                    "model": model,
+                    "output_path": str(tmp_path / "out.mp3"),
+                }
+            )
+        assert res.success is True
+        assert res.cost_usd == expected_cost
+        assert res.data["cost_status"] == "estimated"
+
+    def test_clip_payload_and_fixed_duration(self, tmp_path):
+        tool = GoogleMusic()
+        mock_client = MagicMock()
+        mock_interaction = MagicMock()
+        mock_interaction.status = "completed"
+        mock_interaction.output_audio.data = base64.b64encode(b"clip_audio").decode(
+            "utf-8"
+        )
+        mock_client.interactions.create.return_value = mock_interaction
+
+        with (
+            patch.dict(os.environ, {"GEMINI_API_KEY": "test_key"}),
+            patch("google.genai.Client", return_value=mock_client),
+        ):
+            # Requested duration other than 30 -> ignored, warning, no validation error
+            res = tool.execute(
+                {
+                    "prompt": "upbeat reel loop",
+                    "model": "lyria-3-clip-preview",
+                    "duration_seconds": 200,
+                    "auto_fix": False,
+                    "output_path": str(tmp_path / "clip.mp3"),
+                }
+            )
+            assert res.success is True
+            kwargs = mock_client.interactions.create.call_args.kwargs
+            assert kwargs["model"] == "lyria-3-clip-preview"
+            assert kwargs["input"] == [{"type": "text", "text": "upbeat reel loop"}]
+            assert "Target Duration" not in kwargs["input"][0]["text"]
+            assert res.data["model"] == "lyria-3-clip-preview"
+            assert res.data["duration_seconds"] == 30
+            assert len(res.data["warnings"]) == 1
+            assert "fixed 30-second clip" in res.data["warnings"][0]
+
+            # Default / explicit 30 -> no warning
+            res = tool.execute(
+                {
+                    "prompt": "upbeat reel loop",
+                    "model": "lyria-3-clip-preview",
+                    "duration_seconds": 30,
+                    "output_path": str(tmp_path / "clip2.mp3"),
+                }
+            )
+            assert res.success is True
+            assert res.data["duration_seconds"] == 30
+            assert "warnings" not in res.data
+
+    def test_duration_errors_name_requested_model(self):
+        tool = GoogleMusic()
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test_key"}):
+            res = tool.execute(
+                {
+                    "prompt": "melodic pop",
+                    "model": "lyria-3.5",
+                    "duration_seconds": 200,
+                    "auto_fix": False,
+                }
+            )
+        assert res.success is False
+        assert res.error == "lyria-3.5 maximum duration is 184 seconds."
+
 
 # ---- Image Generation Tools ----
 
@@ -450,6 +564,15 @@ class TestGoogleImagen:
 
 
 class TestVeoVideo:
+    @pytest.fixture(autouse=True)
+    def _before_gemini_veo_shutdown(self, monkeypatch):
+        # These tests mock a Gemini-API (non-Vertex) client. Pin "today" before
+        # the 2026-10-22 Veo preview shutdown so the date gate never fires.
+        import tools.video.veo_video as veo_module
+        from datetime import date
+
+        monkeypatch.setattr(veo_module, "_today", lambda: date(2026, 10, 21))
+
     def test_identity(self):
         tool = VeoVideo()
         info = tool.get_info()

@@ -2,15 +2,18 @@
 
 Calls the Gemini Interactions API (``POST /v1beta/interactions``) directly with
 the project's Google API key — the same key that unlocks Imagen images and
-Cloud TTS. Gemini Omni Flash generates 3-10 second 720p/24fps clips with
-synthesized audio, and is the only provider in the fleet with stateful
+Cloud TTS. Gemini Omni Flash (GA model ``gemini-omni-1.1-flash``) generates
+3-10 second 24fps clips with synthesized audio at 360p, 720p (native), or
+upscaled 1080p/4k, and is the only provider in the fleet with stateful
 conversational editing: pass ``previous_interaction_id`` and describe only the
 delta ("Make the violin invisible. Keep everything else the same.").
 
 Reference images bind to roles via inline prompt tags (``<FIRST_FRAME>``,
-``<IMAGE_REF_N>``) and beats can be scheduled with timecode syntax
-(``[0-3s] ... [3-6s] ...``). See the Layer 3 skill ``gemini-omni`` for the
-authoritative prompting guide — read it before writing prompts.
+``<LAST_FRAME>``, ``<IMAGE_REF_N>``) and beats can be scheduled with timecode
+syntax (``[0-3s] ... [3-6s] ...``). ``first_last_frame_to_video`` interpolates
+between two frames; ``extend`` appends 3-10s to a previous clip (40s total).
+See the Layer 3 skill ``gemini-omni`` for the authoritative prompting guide —
+read it before writing prompts.
 """
 
 from __future__ import annotations
@@ -37,9 +40,17 @@ from tools.base_tool import (
 
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 _UPLOAD_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
-_DEFAULT_MODEL = "gemini-omni-flash-preview"
+_DEFAULT_MODEL = "gemini-omni-1.1-flash"
+# The preview model shuts down 2026-10-22; kept selectable until then.
+_MODELS = ["gemini-omni-1.1-flash", "gemini-omni-flash-preview"]
+_DEFAULT_RESOLUTION = "720p"
+# Default prompt binding for first_last_frame_to_video when the caller did not
+# place the tags themselves. <LAST_FRAME> must always be paired with <FIRST_FRAME>.
+_FIRST_LAST_PREFIX = "<FIRST_FRAME> is the first frame, <LAST_FRAME> is the last frame. "
 # Billed at 5,792 output tokens per second of 720p video, $17.50/1M tokens
 # (ai.google.dev/gemini-api/docs/pricing) — effectively ~$0.10 per second.
+# Google publishes only per-token pricing, so other resolutions reuse this
+# rate and the result is flagged cost_status="estimated".
 _COST_PER_SECOND = 0.10
 _DEFAULT_DURATION_SECONDS = 8
 _POLL_INTERVAL_SECONDS = 5
@@ -52,6 +63,8 @@ class GeminiOmniVideo(BaseTool):
     tier = ToolTier.GENERATE
     capability = "video_generation"
     provider = "gemini_omni"
+    # The model is GA, but the Interactions API it rides on is still evolving
+    # (response shapes, video_config tasks) — keep EXPERIMENTAL until that settles.
     stability = ToolStability.EXPERIMENTAL
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.STOCHASTIC
@@ -61,39 +74,51 @@ class GeminiOmniVideo(BaseTool):
     install_instructions = (
         "Set GEMINI_API_KEY or GOOGLE_API_KEY to a Google AI Studio API key.\n"
         "  Get one at https://aistudio.google.com/apikey\n"
-        "  Gemini Omni Flash is paid-tier only (no free tier); ~$0.10 per second of video."
+        "  Gemini Omni Flash is paid-tier only (no free tier); ~$0.10 per second of 720p video."
     )
     agent_skills = ["gemini-omni", "ai-video-gen"]
 
-    capabilities = ["text_to_video", "image_to_video", "reference_to_video", "edit_video"]
+    capabilities = [
+        "text_to_video",
+        "image_to_video",
+        "reference_to_video",
+        "edit_video",
+        "first_last_frame_to_video",
+        "extend_video",
+    ]
     supports = {
         "text_to_video": True,
         "image_to_video": True,
         "reference_to_video": True,
         "edit_video": True,
+        "first_last_frame_to_video": True,
+        "extend_video": True,
         "conversational_editing": True,
         "native_audio": True,
         "text_rendering": True,
         "timecode_control": True,
-        # Preview limitations — no sampler controls of any kind.
+        # No sampler controls of any kind, even on the GA model.
         "seed": False,
         "negative_prompt": False,
-        "first_last_frame_to_video": False,
     }
     best_for = [
         "iterative natural-language video editing (edit a clip without regenerating it)",
         "reference-image-driven clips via <FIRST_FRAME>/<IMAGE_REF_N> prompt tags",
+        "first+last-frame interpolation and seamless loops (same image as both frames)",
+        "extending a clip in 3-10s steps up to 40s total",
         "fast 3-10s clips with synced audio, rendered text, and timecoded beats from one Google key",
     ]
     not_good_for = [
-        "clips longer than 10 seconds or above 720p",
+        "single generations longer than 10 seconds (extend appends up to 40s total)",
         "seed-reproducible output or negative-prompt control",
+        "silent clips — audio cannot be disabled (strip it in post)",
         "offline generation",
     ]
-    fallback_tools = ["veo_video", "sora_video", "kling_video", "minimax_video"]
-    # Conversational editing + native audio are unique in the fleet, but preview
-    # output is capped at 720p/10s — below seedance (0.95) and grok/runway (0.9)
-    # on raw generation fidelity. Without a quality_score the scorer would only
+    fallback_tools = ["sora_video", "kling_video", "minimax_video"]
+    # Conversational editing + native audio are unique in the fleet, but native
+    # output is 720p (1080p/4k are upscales) and 10s per call — below seedance
+    # (0.95) and grok/runway (0.9) on raw generation fidelity. Without a
+    # quality_score the scorer would only
     # count supports/stability flags and bury the editing capability entirely.
     # See lib/scoring.py.
     quality_score = 0.85
@@ -105,20 +130,65 @@ class GeminiOmniVideo(BaseTool):
             "prompt": {
                 "type": "string",
                 "description": (
-                    "Video description, or for edit_video the change to apply. "
-                    "Supports <FIRST_FRAME>/<IMAGE_REF_N> tags and [0-3s] timecodes — "
-                    "see the gemini-omni skill."
+                    "Video description, for edit_video the change to apply, or for extend "
+                    "what happens next (3-10s appended per call, 40s total max). "
+                    "Supports <FIRST_FRAME>/<LAST_FRAME>/<IMAGE_REF_N> tags and [0-3s] "
+                    "timecodes — see the gemini-omni skill. Audio is always generated; "
+                    "add 'No dialogue, no music' to keep it quiet."
                 ),
             },
             "operation": {
                 "type": "string",
-                "enum": ["text_to_video", "image_to_video", "reference_to_video", "edit_video"],
+                "enum": [
+                    "text_to_video",
+                    "image_to_video",
+                    "reference_to_video",
+                    "edit_video",
+                    "first_last_frame_to_video",
+                    "extend",
+                ],
                 "default": "text_to_video",
+                "description": (
+                    "first_last_frame_to_video interpolates between first_frame_path and "
+                    "last_frame_path (same file = seamless loop). extend appends 3-10s to "
+                    "previous_interaction_id or input_video_path (uploaded clip must be "
+                    "<=10s; uploaded-video extend is unavailable in the EEA, Switzerland, "
+                    "and the UK); total length caps at 40s."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "enum": _MODELS,
+                "default": _DEFAULT_MODEL,
+                "description": (
+                    "gemini-omni-1.1-flash is GA. gemini-omni-flash-preview shuts down "
+                    "2026-10-22 — use it only to reproduce older results."
+                ),
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": ["16:9", "9:16"],
                 "default": "16:9",
+            },
+            "resolution": {
+                "type": "string",
+                "enum": ["360p", "720p", "1080p", "4k"],
+                "default": _DEFAULT_RESOLUTION,
+                "description": (
+                    "Output resolution. 720p is native; 1080p and 4k are upscaled. "
+                    "Cost is only known for 720p; other values are estimated at the same rate."
+                ),
+            },
+            "first_frame_path": {
+                "type": "string",
+                "description": "Local first-frame image (jpg/png) for first_last_frame_to_video.",
+            },
+            "last_frame_path": {
+                "type": "string",
+                "description": (
+                    "Local last-frame image (jpg/png) for first_last_frame_to_video. "
+                    "May be the same file as first_frame_path for a seamless loop."
+                ),
             },
             "duration": {
                 "type": "string",
@@ -139,15 +209,16 @@ class GeminiOmniVideo(BaseTool):
             "previous_interaction_id": {
                 "type": "string",
                 "description": (
-                    "Interaction id from a prior gemini_omni_video result — edits that video "
-                    "in place (edit_video). Requires the prior call to have used store=true."
+                    "Interaction id from a prior gemini_omni_video result — edits (edit_video) "
+                    "or extends (extend) that video. Requires the prior call to have used store=true."
                 ),
             },
             "input_video_path": {
                 "type": "string",
                 "description": (
-                    "Local video to edit (edit_video). Uploaded via the Files API. "
-                    "Editing uploaded videos is unavailable in the EEA, Switzerland, and the UK."
+                    "Local video to edit (edit_video) or extend (extend, <=10s). Uploaded via "
+                    "the Files API. Editing or extending uploaded videos is unavailable in the "
+                    "EEA, Switzerland, and the UK."
                 ),
             },
             "store": {
@@ -166,7 +237,16 @@ class GeminiOmniVideo(BaseTool):
         cpu_cores=1, ram_mb=512, vram_mb=0, disk_mb=500, network_required=True
     )
     retry_policy = RetryPolicy(max_retries=1, retryable_errors=["rate_limit", "timeout"])
-    idempotency_key_fields = ["prompt", "operation", "aspect_ratio", "previous_interaction_id"]
+    idempotency_key_fields = [
+        "prompt",
+        "operation",
+        "model",
+        "aspect_ratio",
+        "resolution",
+        "previous_interaction_id",
+        "first_frame_path",
+        "last_frame_path",
+    ]
     side_effects = [
         "writes video file to output_path",
         "calls the Gemini Interactions API",
@@ -353,12 +433,19 @@ class GeminiOmniVideo(BaseTool):
         operation = inputs.get("operation", "text_to_video")
         prompt = str(inputs["prompt"]).strip()
         aspect_ratio = inputs.get("aspect_ratio", "16:9")
+        resolution = inputs.get("resolution") or _DEFAULT_RESOLUTION
+        model = inputs.get("model") or _DEFAULT_MODEL
         previous_interaction_id = inputs.get("previous_interaction_id")
 
         if operation == "edit_video" and not previous_interaction_id and not inputs.get("input_video_path"):
             return ToolResult(
                 success=False,
                 error="edit_video requires previous_interaction_id (edit a generated clip) or input_video_path (edit an uploaded clip)",
+            )
+        if operation == "extend" and not previous_interaction_id and not inputs.get("input_video_path"):
+            return ToolResult(
+                success=False,
+                error="extend requires previous_interaction_id (extend a generated clip) or input_video_path (extend an uploaded clip of <=10s)",
             )
 
         reference_paths = list(inputs.get("reference_image_paths") or [])
@@ -370,6 +457,26 @@ class GeminiOmniVideo(BaseTool):
                 error=f"{operation} requires reference_image_path or reference_image_paths",
             )
 
+        if operation == "first_last_frame_to_video":
+            first_frame = inputs.get("first_frame_path")
+            last_frame = inputs.get("last_frame_path")
+            if not first_frame or not last_frame:
+                return ToolResult(
+                    success=False,
+                    error="first_last_frame_to_video requires both first_frame_path and last_frame_path (they may be the same file for a loop)",
+                )
+            if reference_paths:
+                return ToolResult(
+                    success=False,
+                    error="first_last_frame_to_video cannot be combined with reference_image_path(s); pass only first_frame_path and last_frame_path",
+                )
+            # First frame then last frame — the API binds the tags in this order.
+            reference_paths = [first_frame, last_frame]
+            # Add the default binding unless the caller placed <FIRST_FRAME>
+            # themselves: a lone <LAST_FRAME> still needs its <FIRST_FRAME> pair.
+            if "<FIRST_FRAME>" not in prompt:
+                prompt = _FIRST_LAST_PREFIX + prompt
+
         try:
             parts: list[dict[str, Any]] = [self._image_part(p) for p in reference_paths]
             if inputs.get("input_video_path"):
@@ -379,18 +486,24 @@ class GeminiOmniVideo(BaseTool):
             return ToolResult(success=False, error=f"Gemini Omni input preparation failed: {e}")
 
         payload: dict[str, Any] = {
-            "model": _DEFAULT_MODEL,
+            "model": model,
             # Plain string for text-only turns (the documented minimal form),
             # typed parts when images or an uploaded video ride along.
             "input": prompt if not parts else parts + [{"type": "text", "text": prompt}],
             # uri delivery avoids the ~4MB inline-payload ceiling; inline data in
             # the response is still handled below if the API returns it anyway.
+            # resolution is always sent (even the 720p default) so the request is explicit.
             "response_format": {
                 "type": "video",
                 "aspect_ratio": aspect_ratio,
+                "resolution": resolution,
                 "delivery": "uri",
             },
         }
+        # video_config.task is optional and inferred from the inputs; only extend
+        # names it, since a video + text input otherwise reads as an edit.
+        if operation == "extend":
+            payload["generation_config"] = {"video_config": {"task": "extend"}}
         if previous_interaction_id:
             payload["previous_interaction_id"] = previous_interaction_id
         if inputs.get("store") is False:
@@ -431,22 +544,27 @@ class GeminiOmniVideo(BaseTool):
             return ToolResult(success=False, error=f"Gemini Omni video generation failed: {e}")
 
         editable = inputs.get("store") is not False
+        result_data: dict[str, Any] = {
+            "provider": self.provider,
+            "model": model,
+            "prompt": prompt,
+            "operation": operation,
+            "output": str(output_path),
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "has_audio": True,
+            # Feed this back as previous_interaction_id to edit or extend this clip.
+            "interaction_id": interaction_id,
+            "editable": editable,
+        }
+        if resolution != _DEFAULT_RESOLUTION:
+            # Only the 720p per-second rate is derivable from Google's token pricing.
+            result_data["cost_status"] = "estimated"
         return ToolResult(
             success=True,
-            data={
-                "provider": self.provider,
-                "model": _DEFAULT_MODEL,
-                "prompt": prompt,
-                "operation": operation,
-                "output": str(output_path),
-                "aspect_ratio": aspect_ratio,
-                "has_audio": True,
-                # Feed this back as previous_interaction_id to edit this clip.
-                "interaction_id": interaction_id,
-                "editable": editable,
-            },
+            data=result_data,
             artifacts=[str(output_path)],
             cost_usd=self.estimate_cost(inputs),
             duration_seconds=round(time.time() - start, 2),
-            model=_DEFAULT_MODEL,
+            model=model,
         )

@@ -1,6 +1,6 @@
 # Lyria 3 API and Prompting Reference
 
-Last verified: 2026-07-18.
+Last verified: 2026-10-09.
 
 ## Provider Families
 
@@ -13,9 +13,16 @@ Last verified: 2026-07-18.
 - Duration: always 30 seconds
 - Gemini Developer API price: $0.04 per request; no free tier
 
-### Lyria 3 Pro
+### Lyria 3.5
 
-- Model: `lyria-3-pro-preview`
+- Model: `lyria-3.5` (OpenMontage `google_music` default)
+- Best for: full songs, vocals, verses, choruses, bridges, longer scores
+- Duration: prompt-influenced, up to 184 seconds; not an exact media contract
+- Gemini Developer API price: $0.08 per request; no free tier
+
+### Lyria 3 Pro (legacy)
+
+- Model: `lyria-3-pro-preview` — superseded by Lyria 3.5; kept in `google_music` for reproducing older results
 - Best for: full songs, vocals, verses, choruses, bridges, longer scores
 - Input: text or up to 10 images through the underlying API
 - Output: MP3 by default; the underlying Pro API can request audio/WAV response format
@@ -38,7 +45,7 @@ from google import genai
 
 client = genai.Client()
 interaction = client.interactions.create(
-    model="lyria-3-pro-preview",
+    model="lyria-3.5",
     input="A structured instrumental score ...",
 )
 
@@ -51,8 +58,8 @@ The convenience properties are preferred for ordinary responses. For interleaved
 The OpenMontage adapter currently:
 
 - sends a list containing one text block and optionally one image block;
-- appends `[Target Duration: N seconds]` to the text;
-- calls `client.interactions.create()` with `lyria-3-pro-preview`;
+- appends `[Target Duration: N seconds]` to the text (not for `lyria-3-clip-preview`, which is always 30 seconds);
+- calls `client.interactions.create()` with the selected `model`: `lyria-3.5` (default), `lyria-3-clip-preview` or `lyria-3-pro-preview`;
 - extracts audio through `output_audio`, then legacy outputs, then step traversal;
 - writes MP3 and reports the requested duration without probing the result.
 
@@ -78,7 +85,7 @@ spoken samples, lyrical fragments, or recognizable quotations.
 Avoid: [unwanted instruments, clichés, oversized hits, abrupt fade].
 ```
 
-Use timestamps as structural instructions, not as proof that Pro will return an exact-length file.
+Use timestamps as structural instructions, not as proof that Lyria 3.5 or Pro will return an exact-length file.
 
 ## Prompt Template: Song With Custom Lyrics
 

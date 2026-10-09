@@ -1,19 +1,19 @@
 """Regression tests: google_imagen must return every image it requests and bills for.
 
-`execute()` sends `sampleCount = number_of_images` to the Imagen API and
-`estimate_cost` scales with `number_of_images`, but result handling was
-hardcoded to `predictions[0]` — images 1..n-1 were decoded never, written
-never, and absent from `artifacts`. Worse, `images_generated` reported
-`len(predictions)`, so the result claimed n images while only one reached
-disk. The user paid for n images and received one.
+Result handling was once hardcoded to the first image — images 1..n-1 never
+reached disk or `artifacts`, while `images_generated` and the cost claimed n.
+The user paid for n images and received one.
+
+The tool now runs exclusively on Gemini image models via generate_content
+(Imagen was retired on 2026-08-17), which returns one image per call, so the
+tool makes `number_of_images` calls. These tests mock the shared genai client
+the same way tests/tools/test_google_imagen_gemini_backend.py does.
 
 Mirrors tests/tools/test_openai_image_multi_output.py, which covers the same
 defect class in the OpenAI provider.
 """
 
-import base64
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -22,37 +22,56 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
+class _FakeInline:
+    def __init__(self, data: bytes):
+        self.data = data
+
+
+class _FakePart:
+    def __init__(self, data: bytes):
+        self.inline_data = _FakeInline(data)
+
+
+class _FakeContent:
+    def __init__(self, parts):
+        self.parts = parts
+
+
+class _FakeCandidate:
+    def __init__(self, parts):
+        self.content = _FakeContent(parts)
+
+
 class _FakeResponse:
-    def __init__(self, count: int):
-        self._count = count
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return {
-            "predictions": [
-                {"bytesBase64Encoded": base64.b64encode(f"IMAGE_{i}".encode()).decode()}
-                for i in range(self._count)
-            ]
-        }
+    def __init__(self, parts):
+        self.candidates = [_FakeCandidate(parts)]
 
 
 @pytest.fixture
 def imagen_tool(monkeypatch):
-    # Stub `requests` so execute() runs fully offline; echo back sampleCount
-    # images so the fake provider honors what the tool asked and billed for.
-    fake = types.ModuleType("requests")
-
-    def _post(url, headers=None, json=None, timeout=None):
-        return _FakeResponse(json["parameters"]["sampleCount"])
-
-    fake.post = _post
-    monkeypatch.setitem(sys.modules, "requests", fake)
+    # Stub the genai client so execute() runs fully offline; each call returns
+    # a distinct image so overwrites would be detectable.
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    calls: list[dict] = []
+
+    class _FakeModels:
+        def generate_content(self, model=None, contents=None, config=None):
+            calls.append({"model": model, "contents": contents, "config": config})
+            return _FakeResponse([_FakePart(f"IMAGE_{len(calls) - 1}".encode())])
+
+    class _FakeClient:
+        models = _FakeModels()
+
+    import tools.google_credentials as gc
+
+    monkeypatch.setattr(
+        gc, "get_genai_client", lambda http_options=None, location=None: _FakeClient()
+    )
     from tools.graphics.google_imagen import GoogleImagen
 
-    return GoogleImagen()
+    tool = GoogleImagen()
+    tool.calls = calls
+    return tool
 
 
 def test_all_requested_images_are_written(imagen_tool, tmp_path):
@@ -61,12 +80,14 @@ def test_all_requested_images_are_written(imagen_tool, tmp_path):
         {"prompt": "p", "number_of_images": 4, "output_path": str(out)}
     )
 
-    assert result.success
+    assert result.success, result.error
     assert result.data["images_generated"] == 4
     assert len(result.artifacts) == 4
+    assert len(imagen_tool.calls) == 4
 
     files = sorted(tmp_path.glob("*.png"))
     assert len(files) == 4  # every image reached disk, none overwritten
+    assert [f.name for f in files] == ["gen_1.png", "gen_2.png", "gen_3.png", "gen_4.png"]
     contents = {f.read_bytes() for f in files}
     assert contents == {b"IMAGE_0", b"IMAGE_1", b"IMAGE_2", b"IMAGE_3"}
 
@@ -82,7 +103,9 @@ def test_artifacts_match_billed_image_count(imagen_tool, tmp_path):
     billed = imagen_tool.estimate_cost(inputs)
 
     assert len(result.artifacts) == 3
-    assert billed == pytest.approx(0.04 * 3)
+    # Default model gemini-nano-banana-2.1 at 1K: $0.0336 per image.
+    assert billed == pytest.approx(0.0336 * 3)
+    assert result.cost_usd == pytest.approx(billed)
 
 
 def test_single_image_keeps_exact_output_path(imagen_tool, tmp_path):
@@ -91,7 +114,7 @@ def test_single_image_keeps_exact_output_path(imagen_tool, tmp_path):
         {"prompt": "p", "number_of_images": 1, "output_path": str(out)}
     )
 
-    assert result.success
+    assert result.success, result.error
     assert result.artifacts == [str(out)]
     assert out.read_bytes() == b"IMAGE_0"
 

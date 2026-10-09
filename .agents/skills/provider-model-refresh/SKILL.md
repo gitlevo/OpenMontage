@@ -1,6 +1,6 @@
 ---
 name: provider-model-refresh
-description: Use the September 2026 image, video, speech and Avatar V adapters with explicit model/host contracts.
+description: Use the September/October 2026 image, video, speech, music and Avatar V adapters with explicit model/host contracts.
 ---
 
 # Provider model refresh
@@ -20,6 +20,7 @@ model must fail rather than silently substitute a different model.
 | Model | Direct tool | Aggregator tools |
 | --- | --- | --- |
 | GPT Image 2.5 Flare / Sunburst | openai_image | openai_fal_image, atlas_refresh_image |
+| Nano Banana 2.1 (google_imagen default) | google_imagen | — |
 | Gemini 3 Pro Image / Nano Banana Pro | google_imagen | gemini_fal_image, gemini_replicate_image, atlas_refresh_image |
 | Ideogram 4.5 / Precise Edit | ideogram_image | ideogram_fal_image |
 | Wan 3.0 | — | wan_fal_video, wan_atlas_video, wan_replicate_video |
@@ -27,7 +28,9 @@ model must fail rather than silently substitute a different model.
 | LTX-2.5 Fast / Pro | ltx_api_video | — |
 | Eleven v4 / v4 Turbo | elevenlabs_tts | fal_elevenlabs_tts (v4 only) |
 | Gemini 3.8 Flash / Flash-Lite TTS | gemini_tts | — |
-| Lyria 3.5 | google_music | — |
+| Lyria 3.5 / Lyria 3 Clip | google_music | — |
+| Gemini Omni Flash 1.1 | gemini_omni_video | gemini_omni_fal, runway_video, comfyui_video |
+| Veo 3.1 (no Gemini API after 2026-10-22) | veo_video (Vertex AI backend) | veo_video (fal backend) |
 | Sonic 3.6 | cartesia_tts | — |
 | Inworld TTS-2 / Flash | inworld_tts | — |
 | Qwen Image 2.1 | qwen_image_21 (local) | — |
@@ -42,7 +45,8 @@ edits. Describe what changes and what must remain. Direct edits use local
 WebP. The old GPT Image 2 default remains available for compatibility.
 
 Google Pro's exact ID is `gemini-3-pro-image`; it is distinct from
-`gemini-3.1-flash-image` (Nano Banana 2). Use up to 14 reference images, and
+`gemini-nano-banana-2.1` (Nano Banana 2.1, the `google_imagen` default) and the
+deprecated `gemini-3.1-flash-image` (Nano Banana 2). Use up to 14 reference images, and
 1K/2K/4K on supported routes. Replicate fallback is disabled.
 
 Ideogram direct `generation_mode=precise_edit` preserves unaffected pixels;
@@ -86,6 +90,27 @@ speaker's voice and turn text separately. Its current adapter outputs WAV.
 Cartesia uses API version 2026-08-14 and WAV. Inworld uses a portal-issued
 Base64 credential with Basic auth, MP3, and at most 2,000 UTF-16 code units.
 Lyria duration is a prompt target, not guaranteed exact timing.
+
+## October 2026 update
+
+Checked 2026-10-09 against the Gemini API model, pricing and deprecations pages.
+
+- **Nano Banana 2.1** (`gemini-nano-banana-2.1`, GA 2026-10-06) is the new
+  `google_imagen` default: $0.0336 (1K), $0.0504 (2K), $0.113 (4K) per image.
+  `gemini-3-pro-image` stays the fidelity/text option ($0.134 1K/2K, $0.24 4K).
+- `gemini-3.1-flash-lite-image` is the cheapest image model ($0.0336), 1K only.
+- `gemini-3.1-flash-image` (Nano Banana 2) is deprecated; still selectable.
+- **Imagen 4** (all variants) was retired on the Gemini API on 2026-08-17.
+  `google_imagen` rejects `imagen-*` IDs with an explicit error.
+- **Gemini Omni Flash 1.1** (`gemini-omni-1.1-flash`) is GA and the
+  `gemini_omni_video` default. It adds first/last frame, extend (to 40s) and
+  360p-4k output. `gemini-omni-flash-preview` shuts down 2026-10-22.
+- **Veo 3.1** preview models (`veo-3.1-generate-preview`, `-fast-`, `-lite-`)
+  shut down on the Gemini API 2026-10-22. `veo_video` refuses Gemini-API Veo
+  calls from that date; afterwards Veo works only via Vertex AI
+  (`veo-3.1-generate-001`) or the fal backend.
+- **Lyria 3 Clip** (`lyria-3-clip-preview`) is in `google_music`: fixed 30s,
+  $0.04. Lyria 3.5 (default) costs $0.08; `lyria-3-pro-preview` is legacy.
 
 ## Avatar V
 

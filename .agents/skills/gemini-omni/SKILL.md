@@ -1,7 +1,7 @@
 ---
 name: gemini-omni
 description: |
-  Generate and conversationally edit short videos with Google Gemini Omni Flash (`gemini-omni-flash-preview`). Use when: (1) iterating on a clip with natural-language edits instead of regenerating ("make the phone invisible, keep everything else the same"), (2) generating 3-10s 720p clips with synthesized audio, rendered on-screen text, or timecoded beats, (3) binding reference images to roles with <FIRST_FRAME>/<IMAGE_REF_N> prompt tags, (4) editing an existing uploaded video. Accessed via the `gemini_omni_video` tool using the project's GEMINI_API_KEY/GOOGLE_API_KEY — the same key as Imagen and Google TTS.
+  Generate and conversationally edit short videos with Google Gemini Omni Flash (`gemini-omni-1.1-flash`, GA). Use when: (1) iterating on a clip with natural-language edits instead of regenerating ("make the phone invisible, keep everything else the same"), (2) generating 3-10s clips (360p-4k) with synthesized audio, rendered on-screen text, or timecoded beats, (3) binding reference images to roles with <FIRST_FRAME>/<LAST_FRAME>/<IMAGE_REF_N> prompt tags, (4) first/last-frame interpolation and seamless loops, (5) extending a clip up to 40s, (6) editing an existing uploaded video. Accessed via the `gemini_omni_video` tool using the project's GEMINI_API_KEY/GOOGLE_API_KEY — the same key as Imagen and Google TTS.
 allowed-tools: Bash, Read, Write
 metadata:
   openclaw:
@@ -13,9 +13,9 @@ metadata:
 
 # Gemini Omni Flash (Google DeepMind)
 
-Gemini Omni is Google DeepMind's video generation **and editing** model family, announced at I/O 2026. The first model, **Gemini Omni Flash** (`gemini-omni-flash-preview`, developer access since June 30, 2026), generates 3-10 second clips at 720p/24fps with synthesized audio via the Gemini **Interactions API**. Its differentiator in the OpenMontage fleet is **stateful conversational editing**: each generation returns an `interaction_id`, and a follow-up call with `previous_interaction_id` edits that video in place — no other wrapped provider can refine a clip without regenerating it.
+Gemini Omni is Google DeepMind's video generation **and editing** model family, announced at I/O 2026. **Gemini Omni Flash** is GA as `gemini-omni-1.1-flash` (the `gemini_omni_video` default as of 2026-10). It generates 3-10 second 24fps clips with synthesized audio via the Gemini **Interactions API** — 720p native, plus 360p and upscaled 1080p/4k. The original `gemini-omni-flash-preview` (developer access since June 30, 2026) is legacy and **shuts down 2026-10-22**; pass `model: "gemini-omni-flash-preview"` only to reproduce older results before then. Its differentiator in the OpenMontage fleet is **stateful conversational editing**: each generation returns an `interaction_id`, and a follow-up call with `previous_interaction_id` edits that video in place — no other wrapped provider can refine a clip without regenerating it.
 
-OpenMontage wraps it as `gemini_omni_video` (native Gemini API, no gateway). It shares `GOOGLE_API_KEY`/`GEMINI_API_KEY` with `google_imagen` and `google_tts` — one key, three capabilities. Paid tier only: ~$0.10 per second of output video (billed as 5,792 output tokens/sec at $17.50/1M).
+OpenMontage wraps it as `gemini_omni_video` (native Gemini API, no gateway). It shares `GOOGLE_API_KEY`/`GEMINI_API_KEY` with `google_imagen` and `google_tts` — one key, three capabilities. Paid tier only: ~$0.10 per second of 720p output (billed as 5,792 output tokens/sec at $17.50/1M). Google publishes only per-token pricing, so 360p/1080p/4k quotes reuse that rate and are flagged `cost_status: "estimated"`.
 
 Other documented routes are available when the direct Google key is not the
 chosen provider:
@@ -36,12 +36,14 @@ by feeding each output video URL into the next edit call.
 | Use it for | Prefer another provider for |
 |---|---|
 | Iterative refinement — generate, review, then edit the same clip in layers | One-shot cinematic hero clips (→ Seedance 2.0, see `seedance-2-0`) |
-| Editing an existing/uploaded clip (restyle, add/remove objects, change text) | Clips longer than 10s or above 720p |
+| Editing an existing/uploaded clip (restyle, add/remove objects, change text) | Native resolution above 720p (1080p/4k are upscales) |
 | On-screen rendered text and word-by-word text beats | Seed-reproducible generations (no seed support) |
-| Reference-image-bound subjects/styles via prompt tags | First/last-frame interpolation (→ `veo_video`) |
+| Reference-image-bound subjects/styles via prompt tags | Silent clips (audio cannot be disabled — strip it in post) |
 | Timecode-scheduled multi-beat clips from one prompt | Non-English narration (English only fully supported) |
+| First/last-frame interpolation and seamless loops | |
+| Extending a clip in 3-10s steps (40s total) | |
 
-Route through `video_selector` for generation operations. **Editing (`edit_video`) is a direct-tool operation** — call `gemini_omni_video` from the registry, because the multi-turn interaction state lives outside the selector's model.
+Route through `video_selector` for generation operations. **Editing (`edit_video`), `first_last_frame_to_video` and `extend` are direct-tool operations** — call `gemini_omni_video` from the registry, because the multi-turn interaction state lives outside the selector's model.
 
 ## Generation prompting
 
@@ -109,12 +111,31 @@ Other working edit prompts: "Make this video anime" / "Put a fashionable hat on 
 
 **Editing uploaded videos:** pass `input_video_path` instead of `previous_interaction_id`; the tool uploads it via the Files API. Unavailable in the EEA, Switzerland, and the UK (editing *generated* videos works everywhere).
 
-## Hard limitations (preview)
+## First and last frame (`first_last_frame_to_video`)
 
-- Output: 3-10s, 720p, 24fps, MP4 with audio; aspect ratio `16:9` or `9:16`. All output carries an invisible SynthID watermark.
+Pass `first_frame_path` and `last_frame_path` (local jpg/png). The tool sends them in that order and, unless your prompt already contains `<FIRST_FRAME>`, prefixes it with `<FIRST_FRAME> is the first frame, <LAST_FRAME> is the last frame.` (`<LAST_FRAME>` must always be paired with `<FIRST_FRAME>`). Do not combine with `reference_image_path(s)`.
+
+**Seamless loop recipe:**
+
+1. Use the **same still** for both `first_frame_path` and `last_frame_path`.
+2. Ask for **slow, gentle camera motion** (slow push-in, subtle drift) and small ambient motion — big moves make the return to the start frame look forced.
+3. Add **"No dialogue."** (and "No music." if you will score it yourself) to the prompt.
+4. Audio is always generated. For a silent loop, strip it: `ffmpeg -i loop.mp4 -c:v copy -an loop_silent.mp4`.
+
+## Resolution
+
+`resolution`: `360p`, `720p` (default, native), `1080p` or `4k` (upscaled). Only 720p has a derivable price (~$0.10/s); other values are quoted at the same rate and marked estimated. Prefer 720p and upscale in post unless you need Google's upscaler.
+
+## Extending a clip (`extend`)
+
+`operation: "extend"` with `previous_interaction_id` (a stored generation) or `input_video_path` (an uploaded clip of **≤10s**). Describe what happens next. Each call appends **3-10s**; the total caps at **40s**. Extending uploaded videos is unavailable in the EEA, Switzerland, and the UK (extending generated clips works everywhere). Chain extends by feeding each result's `interaction_id` into the next call.
+
+## Hard limitations (as of 2026-10)
+
+- Output: 3-10s per call (extend to 40s total), 720p native (360p, upscaled 1080p/4k), 24fps, MP4 with audio that cannot be disabled; aspect ratio `16:9` or `9:16`. All output carries an invisible SynthID watermark.
 - No seed, negative prompt, temperature, top_p, or system instructions.
-- No video extension or first/last-frame interpolation; no voice editing.
-- Audio reference inputs unsupported. Video references ≤3s are accepted by the schema but **not processed correctly** — don't rely on them.
+- No voice editing.
+- Audio reference inputs unsupported. Video references ≤3s were accepted but **not processed correctly** on the preview — don't rely on them.
 - Multi-video prompting unsupported; may degrade output.
 - English fully supported; other languages untested.
 - Images of minors (EEA/CH/UK) and certain recognizable people are blocked for upload/editing.
@@ -123,5 +144,6 @@ Other working edit prompts: "Make this video anime" / "Put a fashionable hat on 
 
 - Generation & editing guide: https://ai.google.dev/gemini-api/docs/omni
 - Model card: https://ai.google.dev/gemini-api/docs/models/gemini-omni-flash
+- Deprecations (preview shutdown 2026-10-22): https://ai.google.dev/gemini-api/docs/deprecations
 - Pricing: https://ai.google.dev/gemini-api/docs/pricing
 - Announcement: https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-omni/
