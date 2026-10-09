@@ -292,6 +292,8 @@ def test_gemini_omni_store_false_marks_result_not_editable(monkeypatch, tmp_path
     assert result.success, result.error
     assert result.data["editable"] is False
     assert calls["post"][0]["json"]["store"] is False
+    # uri delivery requires store=true, so a one-shot call must use inline delivery.
+    assert "delivery" not in calls["post"][0]["json"]["response_format"]
 
 
 def test_gemini_omni_first_last_frame_sends_ordered_parts_and_tags(monkeypatch, tmp_path, gemini_env):

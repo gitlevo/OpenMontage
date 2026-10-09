@@ -508,6 +508,9 @@ class GeminiOmniVideo(BaseTool):
             payload["previous_interaction_id"] = previous_interaction_id
         if inputs.get("store") is False:
             payload["store"] = False
+            # The API rejects uri delivery without store=true, so one-shot
+            # generations fall back to the default inline delivery.
+            del payload["response_format"]["delivery"]
 
         try:
             resp = requests.post(
